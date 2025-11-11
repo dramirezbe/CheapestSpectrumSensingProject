@@ -1,15 +1,9 @@
-/** 
-@file App.jsx
-*/
-import './App.css'
+import React from 'react';
+import './App.css';
+import SpectrumPlot from './components/SpectrumPlot';
 
-function App() {
-
+export default function App() {
   return (
-    <>
-      
-    </>
-  )
+    <SpectrumPlot />
+  );
 }
-
-export default App

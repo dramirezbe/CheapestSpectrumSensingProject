@@ -1,203 +1,170 @@
-/**
-@file components/SpectrumPlot.jsx
-*/
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef } from "react";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
+import { subscribe } from "../services/streamingSpectrum";
+import "./SpectrumPlot.css";
 
-/**
- * SpectrumPlot (fixed)
- * - create uPlot only after metadata (fft_size) arrives
- * - always pass x and y arrays of the same length to u.setData()
- * - use requestAnimationFrame to batch plot updates
- */
-export default function SpectrumPlot({ wsUrl, maxBinsShown = 2048 }) {
-  const rootRef = useRef(null);
-  const wsRef = useRef(null);
-  const uplotRef = useRef(null);
-  const [meta, setMeta] = useState(null);
+const N = 4096;
+const TARGET_FPS = 15;
+const FRAME_MS = 1000 / TARGET_FPS;
 
-  // Keep the base X array (Float64Array) here after creating the plot
-  const xRef = useRef(null);
-  // Reusable y buffer reference (Float64Array)
-  const yRef = useRef(null);
-
-  // pending PSD to draw (Float32Array -> will be copied into yRef on raf)
-  const pendingRef = useRef(null);
+export default function SpectrumPlot() {
+  const wrapperRef = useRef(null);
+  const plotRootRef = useRef(null);
+  const uRef = useRef(null);
+  const latestFrameRef = useRef(null); // owned Float32Array latest
+  const scratchRef = useRef(null);     // reusable scratch of length N
   const rafRef = useRef(null);
+  const userFrozenRef = useRef(false);
+  const unsubRef = useRef(null);
 
-  // Create uPlot only after we get metadata. If metadata changes (fft_size), recreate.
   useEffect(() => {
-    if (!meta || !rootRef.current) return;
+    const wrapper = wrapperRef.current;
+    if (!wrapper) return;
 
-    // Destroy existing plot if present
-    if (uplotRef.current) {
-      uplotRef.current.destroy();
-      uplotRef.current = null;
-    }
+    // create uPlot container
+    const plotDiv = document.createElement("div");
+    plotDiv.style.width = "100%";
+    plotDiv.style.height = "360px";
+    wrapper.appendChild(plotDiv);
+    plotRootRef.current = plotDiv;
 
-    const N = meta.fft_size || maxBinsShown;
-    // build x: 0..N-1
+    // prepare x and initial y
     const x = new Float64Array(N);
     for (let i = 0; i < N; i++) x[i] = i;
-    xRef.current = x;
-
-    // initial zero y
-    const y = new Float64Array(N);
-    yRef.current = y;
-
-    const data = [x, y];
+    const y0 = new Float64Array(N);
 
     const opts = {
-      width: rootRef.current.clientWidth || 800,
-      height: 380,
+      title: "Spectrum Plot",
+      width: plotDiv.clientWidth || 800,
+      height: 360,
+      series: [
+        {}, // x
+        {
+          label: "Magnitude",
+          stroke: "#0aa",
+          width: 1,
+          show: true
+        }
+      ],
       scales: {
         x: { time: false },
-        y: { auto: true },
       },
-      series: [
-        { label: "bin" },
-        {
-          label: "PSD (dB)",
-          stroke: "#1cd362ff",
-          width: 1.5,
-        },
-      ],
       axes: [
-        {
-          show: true,
-          values: (u, vals) => vals.map((v) => v.toFixed(0)),
-          stroke: "#ffff",
-          grid: { show: true, stroke: "#91878785", width: 0.5 },
-        },
-        {
-          show: true,
-          values: (u, vals) => vals.map((v) => v.toFixed(0)),
-          stroke: "#ffff",
-          grid: { show: true, stroke: "#91878785", width: 0.5 },
-        },
+        { space: 50 },
+        {}
       ],
-      cursor: { show: false },
-      legend: { show: false },
+      plugins: []
     };
 
-    uplotRef.current = new uPlot(opts, data, rootRef.current);
+    const data = [x, y0];
 
-    // allow responsive resizing
-    const onResize = () => {
-      if (!uplotRef.current) return;
-      uplotRef.current.setSize({ width: rootRef.current.clientWidth });
-    };
-    window.addEventListener("resize", onResize);
+    const u = new uPlot(opts, data, plotDiv);
+    uRef.current = u;
 
-    return () => {
-      window.removeEventListener("resize", onResize);
-      if (rafRef.current) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = null;
-      }
-      if (uplotRef.current) {
-        uplotRef.current.destroy();
-        uplotRef.current = null;
-      }
-    };
-  }, [meta, rootRef, maxBinsShown]);
-
-  // schedule an RAF to draw the latest pending PSD (if any)
-  const scheduleDraw = () => {
-    if (rafRef.current) return; // already scheduled
-    rafRef.current = requestAnimationFrame(() => {
-      rafRef.current = null;
-      const pending = pendingRef.current;
-      if (!pending || !uplotRef.current || !xRef.current) return;
-
-      const u = uplotRef.current;
-      const x = xRef.current;
-      const len = Math.min(pending.length, x.length);
-
-      // Ensure yRef is right size
-      if (!yRef.current || yRef.current.length !== len) {
-        yRef.current = new Float64Array(len);
-      }
-      const y = yRef.current;
-
-      // copy data: Float32 -> Float64
-      // copy up to len bins
-      for (let i = 0; i < len; i++) y[i] = pending[i];
-
-      // pass x subarray with matching length (typed array view)
-      const x_sub = x.subarray(0, len);
-
-      // debug: lengths must match
-      if (x_sub.length !== y.length) {
-        console.warn("uPlot length mismatch", x_sub.length, y.length);
-      }
-
-      // update plot with matching-length arrays
+    // resize observer
+    const resizeObserver = new ResizeObserver(() => {
       try {
-        u.setData([x_sub, y]);
+        u.setSize({ width: plotDiv.clientWidth, height: 360 });
       } catch (err) {
-        console.warn("uPlot setData failed:", err);
+        console.error(err);
       }
     });
-  };
+    resizeObserver.observe(wrapper);
 
-  // WebSocket lifecycle: connect and receive frames
-  useEffect(() => {
-    const ws = new WebSocket(wsUrl);
-    ws.binaryType = "arraybuffer";
-    wsRef.current = ws;
+    // reusable scratch
+    scratchRef.current = new Float32Array(N);
 
-    ws.onopen = () => {
-      console.log("WS connected", wsUrl);
-    };
+    // autoscale state
+    let currentMin = 0;
+    let currentMax = 1;
 
-    ws.onmessage = (evt) => {
-      // metadata (text)
-      if (typeof evt.data === "string") {
-        try {
-          const m = JSON.parse(evt.data);
-          setMeta(m);
-        } catch (e) {
-          console.warn("err:", e);
-          console.warn("Non-JSON text from WS:", evt.data);
+    // user interaction handlers to freeze autoscale
+    function onUserInteractStart() {
+      userFrozenRef.current = true;
+    }
+    function onUserReset() {
+      userFrozenRef.current = false;
+    }
+    plotDiv.addEventListener("mousedown", onUserInteractStart);
+    plotDiv.addEventListener("wheel", onUserInteractStart, { passive: true });
+    plotDiv.addEventListener("dblclick", onUserReset);
+
+    // subscribe to frames
+    const unsubscribe = subscribe((frame) => {
+      let dataArr = frame;
+      if (dataArr instanceof ArrayBuffer) dataArr = new Float32Array(dataArr);
+      else if (!(dataArr instanceof Float32Array)) {
+        if (Array.isArray(dataArr)) dataArr = Float32Array.from(dataArr);
+        else return;
+      }
+
+      const len = Math.min(dataArr.length, N);
+      scratchRef.current.set(dataArr.subarray(0, len));
+      if (len < N) scratchRef.current.fill(0, len);
+
+      // store an owned copy to avoid mutation races
+      latestFrameRef.current = scratchRef.current.slice(0);
+    });
+    unsubRef.current = unsubscribe;
+
+    // draw loop (throttled)
+    let lastTs = 0;
+    function drawLoop(ts) {
+      if (!lastTs) lastTs = ts;
+      const dt = ts - lastTs;
+      if (dt >= FRAME_MS && latestFrameRef.current) {
+        const latest = latestFrameRef.current;
+
+        if (!userFrozenRef.current) {
+          let min = Infinity, max = -Infinity;
+          for (let i = 0; i < latest.length; i++) {
+            const v = latest[i];
+            if (v < min) min = v;
+            if (v > max) max = v;
+          }
+          if (!Number.isFinite(min) || !Number.isFinite(max)) {
+            min = 0; max = 1;
+          }
+          const pad = (max - min) * 0.05 || 1;
+          currentMin = min - pad;
+          currentMax = max + pad;
+
+          try {
+            u.setData([x, latest]);
+            u.setScale("y", { min: currentMin, max: currentMax });
+          } catch (err) {
+            console.error(err);
+          }
+        } else {
+          // user frozen: update series values without changing scale
+          try {
+            // uPlot doesn't have a direct typed-array-only series update; setData is reliable.
+            u.setData([x, latest]);
+          } catch (err) {
+            console.error(err);
+          }
         }
-        return;
+
+        lastTs = ts;
       }
+      rafRef.current = requestAnimationFrame(drawLoop);
+    }
 
-      // binary Float32Array PSD frame
-      try {
-        const arr = new Float32Array(evt.data);
-        // store latest frame (overwrite older if not yet drawn)
-        pendingRef.current = arr;
-        scheduleDraw();
-      } catch (err) {
-        console.warn("Failed to parse binary PSD frame:", err);
-      }
-    };
+    rafRef.current = requestAnimationFrame(drawLoop);
 
-    ws.onclose = () => console.log("WS closed");
-    ws.onerror = (e) => console.warn("WS error", e);
-
+    // cleanup
     return () => {
-      if (ws && ws.readyState === WebSocket.OPEN) ws.close();
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      if (unsubRef.current) unsubRef.current();
+      plotDiv.removeEventListener("mousedown", onUserInteractStart);
+      plotDiv.removeEventListener("wheel", onUserInteractStart);
+      plotDiv.removeEventListener("dblclick", onUserReset);
+      try { u.destroy(); } catch (err) { console.error(err); }
+      try { resizeObserver.disconnect(); } catch (err) { console.error(err); }
+      try { wrapper.removeChild(plotDiv); } catch (err) { console.error(err); }
     };
-  }, [wsUrl]);
+  }, []);
 
-  return (
-    <div>
-      <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 8 }}>
-        <div>
-          <strong>{meta ? `Center ${(meta.center_freq / 1e6).toFixed(3)} MHz` : "Waiting for metadata..."}</strong>
-        </div>
-        <div style={{ marginLeft: "auto" }}>{meta ? `FFT ${meta.fft_size} | SR ${(meta.sample_rate / 1e6).toFixed(3)} MHz` : null}</div>
-      </div>
-
-      <div ref={rootRef} style={{ width: "100%", height: 380 }} />
-
-      <div style={{ marginTop: 8, color: "#ffffffff", fontSize: 13 }}>
-        Note: This component builds the plot after metadata arrives and ensures x/y lengths match before updating.
-      </div>
-    </div>
-  );
+  return <div ref={wrapperRef} className="spectrum-plot" />;
 }

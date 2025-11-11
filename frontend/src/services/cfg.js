@@ -38,7 +38,6 @@ class SocketService {
     constructor(payload, apiHandShakeUrl) {
         this.payload = payload;
 
-        // Asume que inDevelopment y baseApiUrl están definidas en el scope
         const protocolApi = inDevelopment ? 'http' : 'https';
         const protocolWs = inDevelopment ? 'ws' : 'wss';
         this.fullApiHandShakeUrl = `${protocolApi}://${baseApiUrl}${apiHandShakeUrl}`;
@@ -58,13 +57,13 @@ class SocketService {
     }
 
     /**
-     * Realiza el handshake con el backend de forma asíncrona.
+     * Does backend handshake, returns true if successful, false otherwise
      */
-    async requestConnection() { // <-- AHORA ES ASYNC
+    async requestConnection() {
         let isBusy = false;
         let deviceHash = null;
         try {
-            // AWAIT para esperar la respuesta de fetch
+            
             const response = await fetch(this.fullApiHandShakeUrl, {
                 method: 'POST',
                 headers: {
@@ -73,9 +72,9 @@ class SocketService {
                 body: JSON.stringify(this.payload)
             });
 
-            // Verifica si la respuesta HTTP fue exitosa (código 200-299)
+            
             if(response.ok) {
-                // AWAIT para esperar el parseo del JSON
+                
                 const data = await response.json(); 
                 
                 console.log("Backend Handshake OK");
@@ -83,10 +82,9 @@ class SocketService {
                 deviceHash = data.deviceHash;
                 
                 if (deviceHash) {
-                    this.fullWsUrl = `${this.WsUrl}/${deviceHash}`; // Añadí '/' por seguridad
+                    this.fullWsUrl = `${this.WsUrl}/${deviceHash}`;
                 }
             } else {
-                // Manejar respuestas no-OK (ej. 404, 500)
                 console.error(`Handshake failed with status: ${response.status}`);
             }
         }
@@ -94,42 +92,36 @@ class SocketService {
             console.error(`Handshake error: ${e}`);
         }
         
-        // Actualizar el estado de conexión
         if (isBusy) {
             console.log("Sensor is busy");
             this.initialConnection = false;
         } else if (deviceHash) {
              this.initialConnection = true;
         } else {
-             this.initialConnection = false; // Falla si no hay deviceHash
+             this.initialConnection = false;
         }
         
-        return this.initialConnection; // Retorna si la conexión inicial fue exitosa
+        return this.initialConnection; //return true if the handshake was successful
     }
 
     /**
-     * Intenta abrir el WebSocket. Debe ser ASYNC porque depende de requestConnection().
+     * try to open WS
      */
-    async openWs() { // <-- AHORA ES ASYNC
+    async openWs() {
         this.cleanupWs();
         
-        // AWAIT para asegurar que el handshake se complete antes de continuar
         const canConnect = await this.requestConnection(); 
 
         if (!canConnect) {
-            return null; // El handshake falló o el sensor está ocupado
+            return null;
         }
 
         this.sensorWs = new WebSocket(this.fullWsUrl);
         this.sensorWs.binaryType = 'arraybuffer';
 
-        // Devuelve la instancia del WS para que el llamador pueda esperar el onopen
         return this.sensorWs; 
     }
 
-    /**
-     * Asigna los manejadores de eventos al WS.
-     */
     startDataStream(onDataReceived) {
         if (!this.sensorWs || !onDataReceived) {
             console.warn("No WS instance or onDataReceived callback provided.");
@@ -137,15 +129,13 @@ class SocketService {
             return null;
         }
 
-        // 1. Asignación correcta de onopen
         this.sensorWs.onopen = () => {
             console.log(`WS ${this.fullWsUrl} connected`);
         };
 
-        // 2. Asignación correcta de onmessage
-        this.sensorWs.onmessage = (evt) => { // <-- CORRECCIÓN DE SINTAXIS AQUÍ
+        this.sensorWs.onmessage = (evt) => {
             try {
-                // evt.data es un ArrayBuffer
+                // evt.data is an ArrayBuffer
                 const arr = new Float32Array(evt.data);
                 onDataReceived(arr);
             } catch (err) {
@@ -153,7 +143,6 @@ class SocketService {
             }
         };
 
-        // Opcional: Manejo de errores y cierre
         this.sensorWs.onerror = (err) => {
              console.error("WebSocket Error:", err);
         };
