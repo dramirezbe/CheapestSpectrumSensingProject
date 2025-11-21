@@ -13,5 +13,5 @@ def main():
     return 0 
 
 if __name__ == "__main__":
-    rc = cfg.run_and_capture(main, cfg.NUM_LOG_FILES)
+    rc = cfg.run_and_capture(main, cfg.LOG_FILES_NUM)
     sys.exit(rc)    

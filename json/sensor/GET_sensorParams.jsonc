@@ -1,3 +1,14 @@
 {
-    
-}
+    //Mac ethernet
+    "device_id": "mac ethernet",
+    //central
+    "fc_hz": 98000000,
+    //int (100, 1000000)
+    "rbw_hz": 100000,
+    //int
+    "fs_hz": 20000000,
+    //bw 200000 (bool)
+    "demod": true,
+    //Optional if demod true
+    "mqtt_port": "/1253531"
+}   

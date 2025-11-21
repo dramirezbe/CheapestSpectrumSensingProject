@@ -1,29 +1,155 @@
 #!/usr/bin/env python3
 """@file cfg.py
-@brief Global configuration file with simple terminal logging
+@brief Global configuration file
 """
 
+# =============================
+# 1. IMPORTS
+# =============================
 from __future__ import annotations
+import logging
 import pathlib
 import time
 import sys
 import io
-import logging
 from typing import Optional, Callable
 from enum import Enum, auto
 from contextlib import redirect_stdout, redirect_stderr
-import traceback
+import traceback # Import traceback for printing exceptions
 
+from utils import get_persist_var
+
+# =============================
+# 2. PUBLIC EXPORTS (__all__)
+# =============================
+__all__ = [
+    "VERBOSE", "LOG_FILES_NUM",
+    "SERVER_IP", "RETRY_DELAY_SECONDS",
+    "MQTT_BASE", "MQTT_PSD", "MQTT_JOBS", "MQTT_DEMOD",
+    "APP_DIR", "PROJECT_ROOT", "QUEUE_DIR", "NTP_SERVER",
+    "LOGS_DIR", "HISTORIC_DIR", "PERSIST_FILE", "COMPILED_PATH",
+    "get_time_ms", "EXECUTABLE_PATH",
+    "set_logger", # Added set_logger to __all__ as it's the main logger function
+]
+
+# =============================
+# 3. GLOBAL CONFIGURATION
+# =============================
+LOG_LEVEL = logging.INFO
+VERBOSE = True
+LOG_FILES_NUM = 10
+API_IP = "localhost"
+API_PORT = 9000
+NTP_SERVER = "pool.ntp.org"
+
+RETRY_DELAY_SECONDS = 5
+# =============================
+# 4. TIME HELPERS
+# =============================
 def get_time_ms() -> int:
+    """Returns current time in milliseconds since epoch."""
     return int(time.time() * 1000)
 
-# --- NEW PROXY CLASS ---
+# =============================
+# 5. RUNTIME PATH/FLAG HELPERS
+# =============================
+def _invoked_exe() -> Optional[pathlib.Path]:
+    """Return resolved path invoked by user (sys.argv[0]) if available."""
+    try:
+        if len(sys.argv) > 0 and sys.argv[0]:
+            return pathlib.Path(sys.argv[0]).resolve()
+    except Exception:
+        pass
+    return None
+
+def _is_path_in_meipass(p: pathlib.Path) -> bool:
+    """Heuristic: return True if path looks like it is under a PyInstaller _MEI dir."""
+    try:
+        me = getattr(sys, "_MEIPASS", None)
+        if me:
+            mep = pathlib.Path(me).resolve()
+            return mep == p or mep in p.parents
+        # fallback heuristic: name contains _MEI
+        return any("_MEI" in part for part in p.parts)
+    except Exception:
+        return False
+
+# -----------------------------
+# 5.1. RUNTIME FLAGS (FROZEN, EXECUTABLE_PATH)
+# -----------------------------
+FROZEN = bool(getattr(sys, "frozen", False))
+
+EXECUTABLE_PATH: Optional[pathlib.Path] = None
+if FROZEN:
+    invoked = _invoked_exe()
+    if invoked and invoked.exists() and not _is_path_in_meipass(invoked):
+        EXECUTABLE_PATH = invoked
+    else:
+        try:
+            execp = pathlib.Path(sys.executable).resolve()
+            if execp.exists() and not _is_path_in_meipass(execp):
+                EXECUTABLE_PATH = execp
+        except Exception:
+            EXECUTABLE_PATH = None
+
+# -----------------------------
+# 5.2. BASE APP PATHS (Calculated)
+# -----------------------------
+_THIS_FILE = pathlib.Path(__file__).resolve()
+APP_DIR: pathlib.Path = _THIS_FILE.parent
+PROJECT_ROOT: pathlib.Path = APP_DIR.parent
+
+# If we have an on-disk executable (frozen), detect PROJECT_ROOT
+if EXECUTABLE_PATH is not None:
+    try:
+        exe_parent = EXECUTABLE_PATH.parent  # expected .../build
+        # Accept only PROJECT_ROOT/build/<exe> layout
+        if exe_parent.name == "build" and exe_parent.parent.exists():
+            PROJECT_ROOT = exe_parent.parent.resolve()
+            APP_DIR = (PROJECT_ROOT / "app").resolve()
+    except Exception:
+        # keep dev defaults if detection fails
+        pass
+
+
+try:
+    QUEUE_DIR = (PROJECT_ROOT / "Queue").resolve()
+except Exception:
+    QUEUE_DIR = pathlib.Path("./Queue").resolve()
+
+try:
+    LOGS_DIR = (PROJECT_ROOT / "Logs").resolve()
+except Exception:
+    LOGS_DIR = pathlib.Path("./Logs").resolve()
+
+try:
+    HISTORIC_DIR = (PROJECT_ROOT / "Historic").resolve()
+except Exception:
+    HISTORIC_DIR = pathlib.Path("./Historic").resolve()
+
+PERSIST_FILE = (PROJECT_ROOT / "persistent.json").resolve()
+
+# COMPILED_PATH points to PROJECT_ROOT/build (root build)
+COMPILED_PATH = (PROJECT_ROOT / "build").resolve()
+
+SERVER_IP = "127.0.0.1"
+MQTT_PSD = "/psd"
+MQTT_JOBS = "/jobs"
+MQTT_DEMOD = "/demod"
+MQTT_BASE = f"mqtt://{SERVER_IP}/{get_persist_var("device_id", PERSIST_FILE)}"
+
+
+
+# =============================
+# 6. LOGGING IMPLEMENTATION
+# =============================
 
 class _CurrentStreamProxy:
     """
     A file-like proxy that always delegates to the *current*
     sys.stdout or sys.stderr. This solves the problem of
-    log handlers holding a stale reference to the original stream.
+    log handlers holding a stale reference to the original stream after
+    redirect_stdout/stderr is used.
     """
     def __init__(self, stream_name: str):
         # stream_name is 'stdout' or 'stderr'
@@ -58,13 +184,13 @@ class _CurrentStreamProxy:
                 return 'utf-8' # A reasonable default
             raise
 
-# --- TEE CLASS (Unchanged) ---
 
 class Tee:
     """
     File-like wrapper that writes to two destinations: primary (usually the real terminal stream)
     and secondary (usually a StringIO buffer).
     Delegates fileno(), isatty(), encoding where available to the primary stream.
+    Used by run_and_capture.
     """
     def __init__(self, primary, secondary):
         self.primary = primary
@@ -116,23 +242,99 @@ class Tee:
         # fallback to primary for other attributes
         return getattr(self.primary, name)
 
-# --- RUN AND CAPTURE (Unchanged from your simplified version) ---
 
+class SimpleFormatter(logging.Formatter):
+    """
+    Custom formatter (no color):
+    1. Changes ERROR to EXCEPTION if exc_info is present.
+    2. Pads levelname for alignment.
+    """
+    def __init__(self, fmt, datefmt):
+        super().__init__(fmt, datefmt=datefmt)
+        
+    def format(self, record):
+        # 1. Handle EXCEPTION
+        if record.exc_info:
+            record.levelname = "EXCEPTION"
+            
+        # 2. Pad levelname (9 chars for "EXCEPTION")
+        record.levelname = f"{record.levelname:<9}"
+        
+        # 3. Let parent class format
+        return super().format(record)
+
+
+def set_logger() -> logging.Logger:
+    """
+    Configures and returns a root logger for the application, using the name
+    of the calling script as the logger name and tag.
+    """
+    
+    # 1. Determinar el nombre del script que llama (e.g., 'dummy')
+    # Usamos sys._getframe(1) para obtener el marco de la pila del llamador.
+    try:
+        # stack frame del llamador (ej: el módulo que importó cfg y llamó a set_logger)
+        caller_frame = sys._getframe(1) 
+        # path completo del archivo que llamó a la función
+        caller_file = pathlib.Path(caller_frame.f_code.co_filename) 
+        # nombre del script sin extensión (ej: 'dummy')
+        log_name = caller_file.stem.upper() 
+    except Exception:
+        log_name = "SENSOR_UNKNOWN" # Fallback si falla la detección
+
+    # 2. Usar un logger con nombre único basado en el script
+    logger = logging.getLogger(log_name)
+
+    # 3. Evitar duplicación de handlers
+    if logger.hasHandlers():
+        return logger
+
+    # 4. Configurar el formato
+    logger.setLevel(logging.DEBUG)
+    
+    # El formato ahora utiliza el nombre del logger: %(name)s
+    log_format = f"%(asctime)s[{log_name}]%(levelname)s %(message)s"
+    date_format = "%d-%b-%y(%H:%M:%S)"
+    
+    formatter = SimpleFormatter(log_format, datefmt=date_format)
+
+    # 5. Configurar Handler de Consola
+    stdout_proxy = _CurrentStreamProxy('stdout')
+    console_handler = logging.StreamHandler(stdout_proxy)
+    
+    # Implements VERBOSE flag
+    console_level = logging.INFO if VERBOSE else logging.WARNING
+    
+    console_handler.setLevel(console_level)
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+
+    return logger
+
+# =============================
+# 7. EXECUTION CAPTURE
+# =============================
 def run_and_capture(func: Callable[[], Optional[int]],
                     num_files: int) -> int:
     """
-    Run `func()`, capture stdout/stderr output into files under log_dir/<timestamp>.log,
+    Run `func()`, capture stdout/stderr output into files under log_dir/<timestamp>_<module_name>.log,
     while still letting all output appear on the original terminal.
-
-    This works because the logger is now configured to write to a proxy
-    that always finds the *current* sys.stdout.
 
     Returns rc as int (0 for success).
     """
     log_dir = LOGS_DIR
     timestamp = get_time_ms()
+    
+    # Automatically determine the module name
+    try:
+        # sys.argv[0] is the path to the executed script
+        module_name = pathlib.Path(sys.argv[0]).stem
+    except Exception:
+        module_name = "unknown_module"
+        
+    log_file = log_dir / f"{timestamp}_{module_name}.log"
+    
     log_dir.mkdir(parents=True, exist_ok=True)
-    log_file = log_dir / f"{timestamp}.log"
 
     # Buffers to capture output
     buf_out = io.StringIO()
@@ -150,6 +352,8 @@ def run_and_capture(func: Callable[[], Optional[int]],
 
         with redirect_stdout(tee_out), redirect_stderr(tee_err):
             try:
+                # Add basic logging of the log file name
+                logging.getLogger("SENSOR").info(f"Log file: {log_file.name}")
                 rc = func()
             except SystemExit as e:
                 # preserve int exit codes if provided
@@ -175,7 +379,8 @@ def run_and_capture(func: Callable[[], Optional[int]],
             except Exception:
                 rc = 1
 
-        # Write log file
+        # Write log file and manage history
+        # Use LOG_FILES_NUM from the global scope (since num_files is LOG_FILES_NUM)
         files = [p for p in log_dir.iterdir() if p.is_file() and p.suffix == ".log"]
         files.sort(key=lambda p: p.stat().st_mtime)  # oldest modified first
 
@@ -206,200 +411,22 @@ def run_and_capture(func: Callable[[], Optional[int]],
         except Exception:
             pass
 
-# -----------------------
-# --- basic config ---
-# -----------------------
-# Set this to False to hide INFO logs from the console
-VERBOSE = True # Set to True as requested for testing
 
-API_IP = "localhost"
-API_PORT = 8000
-BASE_API_URL = f"http://{API_IP}:{API_PORT}/api"
-SPECTRUM_URL = "/spectrum"
-STATUS_URL = "/status"
-DEMOD_URL = "/demod"
-SENSOR_PARAMS_URL = "/sensorParams"
-NTP_SERVER = "pool.ntp.org"
-
-NUM_LOG_FILES = 20
-
-
-# -----------------------
-# --- small helpers for runtime paths ---
-# -----------------------
-def _invoked_exe() -> Optional[pathlib.Path]:
-    """Return resolved path invoked by user (sys.argv[0]) if available."""
-    try:
-        if len(sys.argv) > 0 and sys.argv[0]:
-            return pathlib.Path(sys.argv[0]).resolve()
-    except Exception:
-        pass
-    return None
-
-def _is_path_in_meipass(p: pathlib.Path) -> bool:
-    """Heuristic: return True if path looks like it is under a PyInstaller _MEI dir."""
-    try:
-        me = getattr(sys, "_MEIPASS", None)
-        if me:
-            mep = pathlib.Path(me).resolve()
-            return mep == p or mep in p.parents
-        # fallback heuristic: name contains _MEI
-        return any("_MEI" in part for part in p.parts)
-    except Exception:
-        return False
-
-# -----------------------
-# --- runtime flags (defined before resource_path) ---
-# -----------------------
-FROZEN = bool(getattr(sys, "frozen", False))
-
-EXECUTABLE_PATH: Optional[pathlib.Path] = None
-if FROZEN:
-    invoked = _invoked_exe()
-    if invoked and invoked.exists() and not _is_path_in_meipass(invoked):
-        EXECUTABLE_PATH = invoked
-    else:
-        try:
-            execp = pathlib.Path(sys.executable).resolve()
-            if execp.exists() and not _is_path_in_meipass(execp):
-                EXECUTABLE_PATH = execp
-        except Exception:
-            EXECUTABLE_PATH = None
-
-# -----------------------
-# --- base app paths (dev defaults) ---
-# -----------------------
-_THIS_FILE = pathlib.Path(__file__).resolve()
-SRC_DIR: pathlib.Path = _THIS_FILE.parent
-PROJECT_ROOT: pathlib.Path = SRC_DIR.parent
-
-# If we have an on-disk executable, detect PROJECT_ROOT when exe is in PROJECT_ROOT/build/<exe>
-if EXECUTABLE_PATH is not None:
-    try:
-        exe_parent = EXECUTABLE_PATH.parent  # expected .../build
-        # Accept only PROJECT_ROOT/build/<exe> layout
-        if exe_parent.name == "build" and exe_parent.parent.exists():
-            PROJECT_ROOT = exe_parent.parent.resolve()
-            SRC_DIR = (PROJECT_ROOT / "src").resolve()
-    except Exception:
-        # keep dev defaults if detection fails
-        pass
-
-# -----------------------
-# --- Work paths ---
-# -----------------------
-
-LOGS_DIR = (PROJECT_ROOT / "Logs").resolve()
-
-TMP_FILE = (PROJECT_ROOT / "tmp.json").resolve()
-
-# COMPILED_PATH points to PROJECT_ROOT/build (root build)
-COMPILED_PATH = (PROJECT_ROOT / "build").resolve()
-
-# -----------------------
-# --- Logging Setup ---
-# -----------------------
-
-class SimpleFormatter(logging.Formatter):
-    """
-    Custom formatter (no color):
-    1. Changes ERROR to EXCEPTION if exc_info is present.
-    2. Pads levelname for alignment.
-    """
-    def __init__(self, fmt, datefmt):
-        super().__init__(fmt, datefmt=datefmt)
-        
-    def format(self, record):
-        # 1. Handle EXCEPTION
-        if record.exc_info:
-            record.levelname = "EXCEPTION"
-            
-        # 2. Pad levelname (9 chars for "EXCEPTION")
-        record.levelname = f"{record.levelname:<9}"
-        
-        # 3. Let parent class format
-        return super().format(record)
-
-
-def set_logger() -> logging.Logger:
-    """
-    Configures and returns a root logger for the application.
-
-    Usage in other scripts:
-    import cfg
-    log = cfg.set_logger()
-    log.info("This is a test")
-    """
-    
-    # Use a named logger to avoid conflicts with other libraries
-    logger = logging.getLogger("SENSOR")
-
-    # Prevent duplicate handlers if this function is called multiple times
-    if logger.hasHandlers():
-        return logger
-
-    # Set the overall minimum level to log
-    logger.setLevel(logging.DEBUG)
-
-    # Define log format and date format from your request
-    # Added seconds for more precise debugging
-    log_format = "%(asctime)s[SENSOR]%(levelname)s %(message)s"
-    date_format = "%d-%b-%y(%H:%M:%S)"
-    
-    # Create one simple formatter
-    formatter = SimpleFormatter(log_format, datefmt=date_format)
-
-    # --- Console Handler (StreamHandler) ---
-    
-    # *** THIS IS THE FIX ***
-    # Instead of sys.stdout, we give it the proxy object
-    # that always finds the *current* sys.stdout.
-    stdout_proxy = _CurrentStreamProxy('stdout')
-    console_handler = logging.StreamHandler(stdout_proxy)
-    
-    # *** This implements your VERBOSE request ***
-    # If VERBOSE is True, log INFO and above.
-    # If VERBOSE is False, log WARNING and above.
-    console_level = logging.INFO if VERBOSE else logging.WARNING
-    
-    console_handler.setLevel(console_level)
-    console_handler.setFormatter(formatter) # Use simple formatter
-    logger.addHandler(console_handler)
-
-    return logger
-
-# -----------------------
-# --- enums & exports ---
-# -----------------------
-class KalState(Enum):
-    KAL_SCANNING = auto()
-    KAL_CALIBRATING = auto()
-
-
-
+# =============================
+# 9. MODULE EXECUTION
+# =============================
 # quick debug print when executed directly
-if __name__ == "__main__":
+if VERBOSE and __name__ == "__main__":
     # Initialize the logger immediately so it can be used in this file
     log = set_logger()
     log.info("--- cfg.py debug ---")
     log.info(f"PROJECT_ROOT: {PROJECT_ROOT}")
-    log.info(f"SRC_DIR: {SRC_DIR}")
-    log.info(f"COMPILED_PATH: {COMPILED_PATH}")
+    
+    # Finished Debug Prints:
+    log.info(f"APP_DIR: {APP_DIR}")
+    log.info(f"FROZEN: {FROZEN}")
     log.info(f"EXECUTABLE_PATH: {EXECUTABLE_PATH}")
-    log.info(f"TMP_FILE: {TMP_FILE}")
-    log.info(f"VERBOSE: {VERBOSE} (If False, you won't see INFO in console)")
-
-    log.debug("This is a DEBUG message. (Only visible if VERBOSE=True)")
-    log.info("This is an INFO message. (Only visible if VERBOSE=True)")
-    log.warning("This is a WARNING message.")
-    log.error("This is an ERROR message (no exception).")
-
-    # Demonstrate EXCEPTION logging
-    try:
-        x = 1 / 0
-    except ZeroDivisionError as e:
-        # log.exception() automatically adds traceback info
-        # The formatters will change the level to EXCEPTION
-        log.exception(f"A caught exception occurred: {e}")
-
-    log.info("--- End of cfg.py debug ---")
+    log.info(f"LOGS_DIR: {LOGS_DIR}")
+    log.info(f"LOG_LEVEL: {LOG_LEVEL}")
+    log.info(f"NTP_SERVER: {NTP_SERVER}")
+    log.info("--- cfg.py debug end ---")
