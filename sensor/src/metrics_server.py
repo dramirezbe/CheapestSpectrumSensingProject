@@ -163,7 +163,7 @@ async def run_server():
     await asyncio.sleep(0.5)
     client = RequestClient("http://192.168.80.28:8000", verbose=True, logger=log)
 
-    # >>> NUEVO: estado de streaming <<<
+    # >>>  estado de streaming <<<
     current_cfg = None         # última configuración válida recibida del API
     streaming_enabled = False  # indica si debemos seguir adquiriendo en loop
 
