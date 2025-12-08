@@ -31,6 +31,10 @@
 #include "zmqsub.h"
 #include "zmqpub.h"
 
+#include <liquid/liquid.h>
+#include <complex.h>
+#include <stdint.h>
+#include <math.h>
 
 // =========================================================
 // METRICS DEFINITIONS & GLOBALS
@@ -324,6 +328,197 @@ void handle_psd_message(const char *payload) {
     }
 }
 
+
+#include <liquid/liquid.h>
+#include <complex.h>
+#include <stdint.h>
+#include <math.h>
+
+/*############################################## 
+        Demodulation functions
+################################################
+*/
+
+#define AUDIO_FS_TARGET        48000.0f   // objetivo de Fs de audio
+#define AUDIO_DURATION_SECONDS 5.0f       // queremos 5 segundos de audio
+
+// Pequeño helper para clamp
+static float clampf(float x, float min_val, float max_val) {
+    if (x < min_val) return min_val;
+    if (x > max_val) return max_val;
+    return x;
+}
+
+// Escribe un WAV mono 16-bit PCM a partir de un buffer float [-1,1]
+static int write_wav_mono_16(const char* filename,
+                             const float* samples,
+                             size_t num_samples,
+                             unsigned sample_rate)
+{
+    FILE *f = fopen(filename, "wb");
+    if (!f) {
+        perror("[AUDIO] Error opening WAV file");
+        return -1;
+    }
+
+    uint32_t byte_rate   = sample_rate * 2;        // 16 bits mono
+    uint32_t block_align = 2;                      // 2 bytes por muestra
+    uint32_t data_size   = (uint32_t)(num_samples * 2);
+    uint32_t fmt_chunk_size = 16;
+    uint16_t audio_format    = 1;   // PCM
+    uint16_t num_channels    = 1;   // mono
+    uint16_t bits_per_sample = 16;
+    uint32_t riff_chunk_size = 4 + (8 + fmt_chunk_size) + (8 + data_size);
+
+    // RIFF header
+    fwrite("RIFF", 1, 4, f);
+    fwrite(&riff_chunk_size, 4, 1, f);
+    fwrite("WAVE", 1, 4, f);
+
+    // fmt chunk
+    fwrite("fmt ", 1, 4, f);
+    fwrite(&fmt_chunk_size, 4, 1, f);
+    fwrite(&audio_format, 2, 1, f);
+    fwrite(&num_channels, 2, 1, f);
+    fwrite(&sample_rate, 4, 1, f);
+    fwrite(&byte_rate, 4, 1, f);
+    fwrite(&block_align, 2, 1, f);
+    fwrite(&bits_per_sample, 2, 1, f);
+
+    // data chunk
+    fwrite("data", 1, 4, f);
+    fwrite(&data_size, 4, 1, f);
+
+    // Datos PCM 16-bit
+    for (size_t i = 0; i < num_samples; i++) {
+        float s = clampf(samples[i], -1.0f, 1.0f);
+        int16_t v = (int16_t)lrintf(s * 32767.0f);
+        fwrite(&v, sizeof(int16_t), 1, f);
+    }
+
+    fclose(f);
+    return 0;
+}
+
+/**
+ * Demodulación FM básica usando liquid-dsp:
+ *  - Convierte IQ (double complex, escala int8) -> float complex normalizado [-1,1]
+ *  - Demodula con freqdem
+ *  - Decima a ~48 kHz
+ *  - Guarda hasta 5 s en fm_audio_5s.wav
+ *
+ * @param sig            señal IQ (de load_iq_from_buffer)
+ * @param fs_complex_hz  sample rate de las muestras complejas (HackRF)
+ */
+static void demod_fm_and_save(signal_iq_t* sig, double fs_complex_hz)
+{
+    if (!sig || fs_complex_hz <= 0.0) {
+        fprintf(stderr, "[AUDIO] Invalid signal or sample rate\n");
+        return;
+    }
+
+    size_t n_complex = sig->n_signal;  // número de muestras IQ
+    if (n_complex == 0) {
+        fprintf(stderr, "[AUDIO] No IQ samples to demodulate\n");
+        return;
+    }
+
+    // 1) Convertir IQ (double complex) a float complex en [-1,1]
+    float complex *x = (float complex*)malloc(n_complex * sizeof(float complex));
+    if (!x) {
+        fprintf(stderr, "[AUDIO] Failed to allocate complex buffer\n");
+        return;
+    }
+
+    for (size_t n = 0; n < n_complex; n++) {
+        double complex s = sig->signal_iq[n];
+        // Tus valores originales eran int8: [-128, 127]
+        // Aquí los normalizamos a [-1,1] dividiendo por 128.0
+        float I = (float)(creal(s) / 128.0);
+        float Q = (float)(cimag(s) / 128.0);
+        x[n] = I + Q * I * 0.0f;   // mejor: I + _Complex_I * Q
+        x[n] = I + _Complex_I * Q;
+    }
+
+    // 2) Crear demodulador FM de liquid-dsp
+    float kf = 0.5f;  // sensibilidad, se puede ajustar
+    freqdem dem = freqdem_create(kf);
+    if (dem == NULL) {
+        fprintf(stderr, "[AUDIO] freqdem_create failed\n");
+        free(x);
+        return;
+    }
+
+    // 3) Buffer temporal de audio a Fs = Fs_complex (luego decimamos)
+    float *audio_tmp = (float*)malloc(n_complex * sizeof(float));
+    if (!audio_tmp) {
+        fprintf(stderr, "[AUDIO] Failed to allocate audio_tmp\n");
+        freqdem_destroy(dem);
+        free(x);
+        return;
+    }
+
+    for (size_t n = 0; n < n_complex; n++) {
+        float y = 0.0f;
+        freqdem_demodulate(dem, x[n], &y);
+        audio_tmp[n] = y;
+    }
+
+    // 4) Decimación a ~48 kHz
+    double fs_c = fs_complex_hz;
+    double fs_target = AUDIO_FS_TARGET;
+    unsigned decim = (unsigned)floor(fs_c / fs_target);
+    if (decim == 0) decim = 1;  // por si Fs_complex < 48k
+
+    double fs_audio = fs_c / (double)decim;
+
+    // Número máximo de muestras para 5 s
+    size_t max_audio_samples = (size_t)(AUDIO_DURATION_SECONDS * fs_audio);
+
+    // Número de muestras de audio disponibles tras decimación
+    size_t audio_avail = n_complex / decim;
+    size_t n_audio = audio_avail < max_audio_samples ? audio_avail : max_audio_samples;
+
+    if (n_audio == 0) {
+        fprintf(stderr, "[AUDIO] Not enough samples for audio\n");
+        free(audio_tmp);
+        freqdem_destroy(dem);
+        free(x);
+        return;
+    }
+
+    float *audio_out = (float*)malloc(n_audio * sizeof(float));
+    if (!audio_out) {
+        fprintf(stderr, "[AUDIO] Failed to allocate audio_out\n");
+        free(audio_tmp);
+        freqdem_destroy(dem);
+        free(x);
+        return;
+    }
+
+    // Hacer la decimación simple por diezmado
+    size_t idx = 0;
+    for (size_t n = 0; n < n_complex && idx < n_audio; n += decim) {
+        audio_out[idx++] = audio_tmp[n];
+    }
+
+    // 5) Guardar WAV en el directorio actual
+    const char *wav_name = "fm_audio_5s.wav";
+    if (write_wav_mono_16(wav_name, audio_out, n_audio, (unsigned)fs_audio) == 0) {
+        printf("[AUDIO] Saved FM audio (%.2f s) to %s (Fs ~ %.1f Hz)\n",
+               (double)n_audio / fs_audio, wav_name, fs_audio);
+    } else {
+        fprintf(stderr, "[AUDIO] Failed to write WAV file\n");
+    }
+
+    // 6) Limpieza
+    free(audio_out);
+    free(audio_tmp);
+    freqdem_destroy(dem);
+    free(x);
+}
+
+
 // =========================================================
 // MAIN ORCHESTRATION
 // =========================================================
@@ -410,13 +605,21 @@ int main() {
             double* psd = malloc(psd_cfg.nperseg * sizeof(double));
 
             if (freq && psd && sig) {
+                // 1) PSD
                 execute_welch_psd(sig, &psd_cfg, freq, psd);
                 scale_psd(psd, psd_cfg.nperseg, desired_config.scale);
-                
-                // --- STOP DSP TIMER ---
-                t_end_dsp = get_time_ms();
 
+                // 2) Publicar PSD
                 publish_results(freq, psd, psd_cfg.nperseg);
+
+                // 3) Demodulación FM y guardado de audio (5 s)
+                // Usa el sample rate complejo que corresponda en tu código:
+                // por ejemplo: desired_config.sample_rate_hz o hack_cfg.sample_rate_hz
+                double fs_complex_hz = 20000000.0; 
+                demod_fm_and_save(sig, fs_complex_hz);
+
+                // --- STOP DSP TIMER (incluye PSD + demod) ---
+                t_end_dsp = get_time_ms();
 
                 // --- LOG METRICS ---
                 SystemMetrics_t metrics;
