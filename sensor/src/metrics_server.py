@@ -161,7 +161,7 @@ async def run_server():
     sub = ZmqSub(addr=cfg.IPC_DATA_ADDR, topic=topic_data)
 
     await asyncio.sleep(0.5)
-    client = RequestClient("http://192.168.80.28:8000", verbose=True, logger=log)
+    client = RequestClient(cfg.API_URL, verbose=True, logger=log)
 
     # >>>  estado de streaming <<<
     current_cfg = None         # última configuración válida recibida del API
