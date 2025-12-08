@@ -8,7 +8,8 @@ cd "$SCRIPT_DIR"
 # Compilador y flags
 CC=gcc
 CFLAGS="-Wall -Wextra -O2"
-LDFLAGS="-lhackrf -lzmq -lcjson -lm -lpthread"
+# Agregamos -lliquid al final para usar liquid-dsp
+LDFLAGS="-lhackrf -lzmq -lcjson -lm -lpthread -lliquid"
 
 # Lista de fuentes C (ajusta según tus archivos reales)
 SOURCES=(
