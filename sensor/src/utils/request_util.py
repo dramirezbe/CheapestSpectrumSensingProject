@@ -3,9 +3,12 @@
 @brief Simple reusable HTTP client helper with rc codes and print-based logging.
 """
 
-import json
 import requests
 from typing import Optional, Tuple, Dict, Any
+import zmq
+import zmq.asyncio
+import json
+import logging
 
 class RequestClient:
     """
@@ -23,13 +26,12 @@ class RequestClient:
         timeout: Tuple[float, float] = (5, 15),
         verbose: bool = False,
         logger=None,
-        api_key: str = "",
     ):
+        # Removed api_key argument
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.verbose = verbose
         self._log = logger
-        self.api_key = api_key # Stored API key
 
     # -------------------------------------------------------------------------
     # Public methods
@@ -79,27 +81,17 @@ class RequestClient:
 
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         
-        # --- NEW LOGIC: Add API Key Authorization Header ---
-        final_headers = headers if headers is not None else {}
-        if self.api_key and "Authorization" not in final_headers:
-            # Ensure the Authorization header is set if an API key exists
-            final_headers["Authorization"] = f"ApiKey {self.api_key}"
-            
-        if self.verbose and self._log:
-            self._log.info(f"[HTTP] Authorization header set: {'Authorization' in final_headers}")
-        # --------------------------------------------------
-
         try:
             if self.verbose and self._log:
                 # Log URL and method
                 self._log.info(f"[HTTP] {method} → {url}")
-                # Optional: Log headers to confirm API key is present (use with caution)
-                # self._log.info(f"[HTTP] Headers: {final_headers}")
+                # Optional: Log headers
+                # self._log.info(f"[HTTP] Headers: {headers}")
 
             resp = requests.request(
                 method,
                 url,
-                headers=final_headers, # Use final_headers with API key
+                headers=headers, 
                 data=data,
                 params=params,
                 timeout=self.timeout,
@@ -112,7 +104,6 @@ class RequestClient:
                 return 0, resp
 
             # Known HTTP errors
-            # ... (Existing error handling logic remains the same)
             if 300 <= resp.status_code < 400:
                 msg = f"[HTTP] redirect rc={resp.status_code}"
             elif 400 <= resp.status_code < 500:
@@ -145,3 +136,54 @@ class RequestClient:
             if self._log:
                 self._log.error(f"[HTTP] unexpected error: {e}")
             return 2, None
+
+class ZmqPub:
+    def __init__(self, addr, verbose=False, log=logging.getLogger(__name__)):
+        self.verbose = verbose
+        self._log = log
+        self.context = zmq.Context()
+        self.socket = self.context.socket(zmq.PUB)
+        # Bind to IPC address
+        self.socket.bind(addr)
+
+        self._log.info(f"ZmqPub initialized at {addr}")
+        
+
+    def public_client(self, topic: str, payload: dict):
+        json_msg = json.dumps(payload)
+        full_msg = f"{topic} {json_msg}"
+        self.socket.send_string(full_msg)
+        if self.verbose:
+            self._log.info(f"[ZmqPub]Sent: {full_msg}")
+
+    def close(self):
+        self.socket.close()
+        self.context.term()
+
+class ZmqSub:
+    def __init__(self, addr, topic: str, verbose=False, log=logging.getLogger(__name__)):
+        self.verbose = verbose
+        self.topic = topic
+        self._log = log
+        self.context = zmq.asyncio.Context()
+        self.socket = self.context.socket(zmq.SUB)
+        # Connect to IPC address
+        self.socket.connect(addr)
+        self.socket.subscribe(self.topic.encode('utf-8'))
+
+        self._log.info(f"ZmqPub initialized at {addr} with topic {self.topic}")
+
+    async def wait_msg(self):
+        while True:
+            full_msg = await self.socket.recv_string()
+            pub_topic, json_msg = full_msg.split(" ", 1)
+
+            if pub_topic == self.topic:
+                if self.verbose:
+                    print(f"[ZmqSub-{self.topic}] Received: {json_msg}")
+                return json.loads(json_msg)
+
+    def close(self):
+        self.socket.close()
+        self.context.term()
+
