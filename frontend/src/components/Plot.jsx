@@ -9,6 +9,7 @@ import "./Plot.css";
 
 const N = 4096;
 const POLL_INTERVAL_MS = 1000;
+const DB_STEP = 10; // dB change per click
 
 export default function Plot({ selectedMac }) {
   const wrapperRef = useRef(null);
@@ -22,6 +23,9 @@ export default function Plot({ selectedMac }) {
       snr_db: 0,
       auto_threshold_dbm: 0
   });
+
+  // -- State for Y-Axis Control --
+  const [yRange, setYRange] = useState({ min: -120, max: -20 });
 
   // -- Refs for High-Speed Plotting (Updates Canvas) --
   const latestYRef = useRef(new Float32Array(N)); 
@@ -65,7 +69,8 @@ export default function Plot({ selectedMac }) {
       ],
       scales: {
         x: { time: false },
-        y: { auto: false, range: [-120, -20] } // Fixed range prevents jitter
+        // Use state values for initial render
+        y: { auto: false, range: [yRange.min, yRange.max] } 
       },
       axes: [
         { 
@@ -130,7 +135,15 @@ export default function Plot({ selectedMac }) {
     };
   }, []); 
 
-  // 2. Data Polling
+  // 2. Handle Y-Axis Scale Updates (When buttons are clicked)
+  useEffect(() => {
+    if(uRef.current) {
+        // Efficiently update scale without re-initializing chart
+        uRef.current.setScale('y', { min: yRange.min, max: yRange.max });
+    }
+  }, [yRange]);
+
+  // 3. Data Polling
   useEffect(() => {
     if (!selectedMac) return;
 
@@ -183,6 +196,10 @@ export default function Plot({ selectedMac }) {
     return () => clearInterval(intervalId);
   }, [selectedMac]); 
 
+  // -- Button Handlers --
+  const changeFloor = (delta) => setYRange(prev => ({ ...prev, min: prev.min + delta }));
+  const changeCeiling = (delta) => setYRange(prev => ({ ...prev, max: prev.max + delta }));
+
   // --- RENDER ---
   return (
     <div className="spectrum-plot-card">
@@ -213,6 +230,27 @@ export default function Plot({ selectedMac }) {
 
         {/* The uPlot Container */}
         <div ref={wrapperRef} className="uplot-wrapper" />
+
+        {/* Y-Axis Controls */}
+        <div className="plot-controls">
+            
+            {/* Floor Controls (Bottom Span) */}
+            <div className="control-group">
+                <span className="control-label">Floor: <b>{yRange.min}</b></span>
+                <button className="btn-icon" onClick={() => changeFloor(-DB_STEP)} title="Lower Floor">-</button>
+                <button className="btn-icon" onClick={() => changeFloor(DB_STEP)} title="Raise Floor">+</button>
+            </div>
+
+            <div style={{ flex: 1 }}></div> {/* Spacer */}
+
+            {/* Ceiling Controls (Upper Span) */}
+            <div className="control-group">
+                <span className="control-label">Ceiling: <b>{yRange.max}</b></span>
+                <button className="btn-icon" onClick={() => changeCeiling(-DB_STEP)} title="Lower Ceiling">-</button>
+                <button className="btn-icon" onClick={() => changeCeiling(DB_STEP)} title="Raise Ceiling">+</button>
+            </div>
+
+        </div>
     </div>
   );
 }

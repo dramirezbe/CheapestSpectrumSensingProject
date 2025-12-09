@@ -69,3 +69,52 @@
     width: 100%;
     min-height: 360px; /* Ensure space is reserved */
 }
+
+/* --- NEW CONTROLS STYLES --- */
+.plot-controls {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background-color: #f9f9f9;
+    padding: 10px 15px;
+    border-radius: 8px;
+    border-top: 1px solid #eee;
+}
+
+.control-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.control-label {
+    font-size: 0.9rem;
+    color: #555;
+    margin-right: 5px;
+    min-width: 90px;
+}
+
+.btn-icon {
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-color: white;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: bold;
+    color: #333;
+    transition: all 0.2s ease;
+}
+
+.btn-icon:hover {
+    background-color: #e2e6ea;
+    border-color: #adb5bd;
+}
+
+.btn-icon:active {
+    background-color: #dae0e5;
+    transform: translateY(1px);
+}
