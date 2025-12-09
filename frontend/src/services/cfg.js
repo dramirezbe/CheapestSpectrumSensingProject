@@ -12,146 +12,147 @@ const inDevelopment = (VITE_DEVELOPMENT_STRING === 'true' || VITE_DEVELOPMENT_ST
 let baseApiUrl;
 if (inDevelopment) {
     // In Development, use HTTP
-    baseApiUrl = `http://${VITE_API_IP}:${VITE_API_PORT}`;
+    baseApiUrl = `http://${VITE_API_IP}:${VITE_API_PORT}/api/v1`;
 }
 else {
     // In Production/Other, use HTTPS
-    baseApiUrl = `https://${VITE_API_IP}:${VITE_API_PORT}`;
+    baseApiUrl = `https://${VITE_API_IP}:${VITE_API_PORT}/api/v1`;
 }
 
 // --- 3. Endpoint Paths and Final Export ---
-const SOCKET_SPECTRUM = import.meta.env.VITE_SOCKET_SPECTRUM || "/frontSpectrum";
-const SOCKET_DEMOD = import.meta.env.VITE_SOCKET_DEMOD || "/frontDemod";
-const PARAMS_EP = import.meta.env.VITE_PARAMS_EP || "/frontParams";
-const STATUS_EP = import.meta.env.VITE_STATUS_EP || "/frontStatus";
+const REALTIME_EP = import.meta.env.VITE_REALTIME_EP || "/front/realtime";
+const DATA_EP = import.meta.env.VITE_DATA_EP || "/front/data";
+const RECONNECT_INTERVAL_MS_WS = 3000;
+const MAX_RECONNECT_ATTEMPTS_WS = 5;
 
 const api_cfg = {
     baseApiUrl,
-    SOCKET_SPECTRUM,
-    SOCKET_DEMOD,
-    PARAMS_EP,
-    STATUS_EP,
+    REALTIME_EP,
+    DATA_EP,
+    RECONNECT_INTERVAL_MS_WS,
+    MAX_RECONNECT_ATTEMPTS_WS,
     inDevelopment
 };
 
+
+
 class SocketService {
-    constructor(payload, apiHandShakeUrl) {
-        this.payload = payload;
-
-        const protocolApi = inDevelopment ? 'http' : 'https';
-        const protocolWs = inDevelopment ? 'ws' : 'wss';
-        this.fullApiHandShakeUrl = `${protocolApi}://${baseApiUrl}${apiHandShakeUrl}`;
-        this.WsUrl = `${protocolWs}://${baseApiUrl}`;
-        this.fullWsUrl = null;
-
-        this.initialConnection = false;
-        this.sensorWs = null;
+    /**
+     * @param {string} wsPath - The path or endpoint for the WebSocket connection (e.g., 'metrics').
+     * @param {number} [wsPort] - Optional port number if different from the baseApiUrl's default.
+     */
+    constructor(wsPath) {
+        // Construct the full WebSocket URL
+        // Example: ws://localhost:8000/ws/metrics
+        this.fullWsUrl = `${baseApiUrl}${wsPath}`; 
+        this.socket = null;
+        this.shouldReconnect = true; // Flag to control reconnection behavior
+        this.reconnectAttempts = 0;
+        this.messageListeners = []; // Array to hold functions that handle incoming messages
     }
 
-    cleanupWs() {
-        if (this.sensorWs) {
-            console.log(`Closing existing WS connection to ${this.fullWsUrl}`);
-            this.sensorWs.close();
-            this.sensorWs = null;
+    /**
+     * Starts the WebSocket connection and sets up event handlers.
+     */
+    open() {
+        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+            console.log("WebSocket is already open.");
+            return;
+        }
+
+        this.socket = new WebSocket(this.fullWsUrl);
+        
+        this.socket.onopen = (event) => {
+            console.log(`WebSocket connected to: ${this.fullWsUrl}`);
+            this.reconnectAttempts = 0; // Reset attempts on successful connection
+            // You can call a user-defined onOpen callback here if needed
+            this.onOpenEvent = event;
+        };
+
+        this.socket.onmessage = (event) => {
+            // Distribute the incoming message to all registered listeners
+            const data = JSON.parse(event.data);
+            this.messageListeners.forEach(listener => listener(data));
+        };
+
+        this.socket.onclose = (event) => {
+            console.log(`WebSocket closed. Code: ${event.code}. Reason: ${event.reason}`);
+            // Attempt to reconnect only if `close()` wasn't explicitly called
+            if (this.shouldReconnect) {
+                this.scheduleReconnect();
+            }
+        };
+
+        this.socket.onerror = (error) => {
+            console.error("WebSocket error:", error);
+            // Error typically triggers onclose, where reconnection logic is handled
+        };
+    }
+
+    /**
+     * Closes the WebSocket connection and prevents automatic reconnection.
+     */
+    close() {
+        if (this.socket) {
+            this.shouldReconnect = false; // Stop reconnection attempts
+            this.socket.close(1000, "Client closed connection.");
+            console.log("WebSocket connection manually closed.");
         }
     }
 
     /**
-     * Does backend handshake, returns true if successful, false otherwise
+     * Schedules a reconnection attempt with exponential backoff and a maximum limit.
      */
-    async requestConnection() {
-        let isBusy = false;
-        let deviceHash = null;
-        try {
-            
-            const response = await fetch(this.fullApiHandShakeUrl, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(this.payload)
-            });
+    scheduleReconnect() {
+        if (this.reconnectAttempts >= RECONNECT_INTERVAL_MS_WS) {
+            console.error("Maximum reconnection attempts reached. Giving up.");
+            return;
+        }
 
-            
-            if(response.ok) {
-                
-                const data = await response.json(); 
-                
-                console.log("Backend Handshake OK");
-                isBusy = data.isBusy;
-                deviceHash = data.deviceHash;
-                
-                if (deviceHash) {
-                    this.fullWsUrl = `${this.WsUrl}/${deviceHash}`;
-                }
-            } else {
-                console.error(`Handshake failed with status: ${response.status}`);
-            }
-        }
-        catch (e) {
-            console.error(`Handshake error: ${e}`);
-        }
+        const delay = RECONNECT_INTERVAL_MS_WS * Math.pow(2, this.reconnectAttempts);
+        this.reconnectAttempts++;
         
-        if (isBusy) {
-            console.log("Sensor is busy");
-            this.initialConnection = false;
-        } else if (deviceHash) {
-             this.initialConnection = true;
+        console.log(`Attempting to reconnect in ${delay}ms (Attempt ${this.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS_WS})...`);
+        
+        setTimeout(() => {
+            if (this.shouldReconnect) {
+                this.open();
+            }
+        }, delay);
+    }
+    
+    /**
+     * Registers a callback function to handle incoming messages.
+     * @param {function(any): void} listener 
+     */
+    onMessage(listener) {
+        this.messageListeners.push(listener);
+    }
+    
+    /**
+     * Removes a callback function from the message listeners.
+     * @param {function(any): void} listener 
+     */
+    removeMessageListener(listener) {
+        this.messageListeners = this.messageListeners.filter(l => l !== listener);
+    }
+
+    /**
+     * Sends data over the WebSocket connection.
+     * @param {Object} data - The data object to send.
+     */
+    send(data) {
+        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+            this.socket.send(JSON.stringify(data));
         } else {
-             this.initialConnection = false;
+            console.warn("WebSocket not open. Cannot send data.");
         }
-        
-        return this.initialConnection; //return true if the handshake was successful
     }
-
-    /**
-     * try to open WS
-     */
-    async openWs() {
-        this.cleanupWs();
-        
-        const canConnect = await this.requestConnection(); 
-
-        if (!canConnect) {
-            return null;
-        }
-
-        this.sensorWs = new WebSocket(this.fullWsUrl);
-        this.sensorWs.binaryType = 'arraybuffer';
-
-        return this.sensorWs; 
-    }
-
-    startDataStream(onDataReceived) {
-        if (!this.sensorWs || !onDataReceived) {
-            console.warn("No WS instance or onDataReceived callback provided.");
-            this.cleanupWs();
-            return null;
-        }
-
-        this.sensorWs.onopen = () => {
-            console.log(`WS ${this.fullWsUrl} connected`);
-        };
-
-        this.sensorWs.onmessage = (evt) => {
-            try {
-                // evt.data is an ArrayBuffer
-                const arr = new Float32Array(evt.data);
-                onDataReceived(arr);
-            } catch (err) {
-                console.warn("Failed to parse binary PSD frame:", err);
-            }
-        };
-
-        this.sensorWs.onerror = (err) => {
-             console.error("WebSocket Error:", err);
-        };
-        this.sensorWs.onclose = () => {
-             console.log("WebSocket connection closed.");
-        };
-    }   
 }
 
+const getCssVar = (name) => {return getComputedStyle(document.documentElement).getPropertyValue(name).trim();}
+
 export default SocketService;
+export { getCssVar };
 
 export { api_cfg };

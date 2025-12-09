@@ -1,0 +1,28 @@
+// POST metrics
+{
+  //int
+  "mac": 10,
+
+  "metrics": {
+    // In percentage (float)
+    // Percentage of usage per thread
+    "cpu": [57.2, 10.1, 11.4, 23.5],
+    // Usage in MB (int)
+    "ram_mb": 3245,
+    "swap_mb": 345,
+    "disk_mb": 26734,
+    // Temperature in degrees Celsius (float)
+    "temp_c": 50
+  },
+  "total_metrics": {
+    // Total in MB (int)
+    "ram_mb": 1234,
+    "swap_mb": 1234,  
+    "disk_mb": 786734
+  },
+
+  // Last saved server ping (float)
+  "ping_ms": 34.7,
+  // In ms unix
+  "timestamp_ms": 467054056
+}

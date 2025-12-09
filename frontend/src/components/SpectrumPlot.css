@@ -1,7 +1,0 @@
-/* debug border only */
-.spectrum-plot {
-  width: 100%;
-  height: 360px;
-  box-sizing: border-box;
-  border: 1px dashed #f00; /* debug border */
-}

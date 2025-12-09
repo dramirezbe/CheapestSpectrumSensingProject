@@ -1,0 +1,10 @@
+/* components/Plot.css */
+.spectrum-plot {
+  border: 1px solid #ddd;
+  box-shadow: var(--box-shadow);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding-bottom: 60px;
+  border-radius: 10px;
+}
