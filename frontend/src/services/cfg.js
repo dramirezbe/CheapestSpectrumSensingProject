@@ -12,11 +12,11 @@ const inDevelopment = (VITE_DEVELOPMENT_STRING === 'true' || VITE_DEVELOPMENT_ST
 let baseApiUrl;
 if (inDevelopment) {
     // In Development, use HTTP
-    baseApiUrl = `http://${VITE_API_IP}:${VITE_API_PORT}/api/v1`;
+    baseApiUrl = `http://127.0.0.1:8000/api/v1`;
 }
 else {
     // In Production/Other, use HTTPS
-    baseApiUrl = `https://${VITE_API_IP}:${VITE_API_PORT}/api/v1`;
+    baseApiUrl = `http://127.0.0.1:8000/api/v1`;
 }
 
 // --- 3. Endpoint Paths and Final Export ---

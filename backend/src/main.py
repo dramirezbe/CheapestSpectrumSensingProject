@@ -1,9 +1,12 @@
 import json
+import numpy as np
 from fastapi import FastAPI, Body, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, Any, Optional
 
-# --- Swagger/OpenAPI Configuration ---
+# ==============================
+#    Swagger & App Config
+# ==============================
 tags_metadata = [
     {
         "name": "Frontend",
@@ -18,7 +21,7 @@ tags_metadata = [
 app = FastAPI(
     title="Spectrum Sensor API",
     description="API for controlling remote spectrum sensors and visualizing data.",
-    version="1.2.1",
+    version="1.3.0",
     openapi_tags=tags_metadata
 )
 
@@ -31,20 +34,35 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ==============================
+#       Data Storage
+# ==============================
+
 # --- Load Valid MACs ---
 def load_valid_macs():
     try:
         with open("src/macs.json", "r") as f:
             return set(json.load(f))
     except FileNotFoundError:
+        # Fallback for dev if file doesn't exist
         return {"d0:65:78:9c:dd:d0", "d0:65:78:9c:dd:d1", "d0:65:78:9c:dd:d2"}
 
 VALID_MACS = load_valid_macs()
 
 # --- In-Memory Storage ---
+# Structure: { 
+#   "aa:bb:cc...": { 
+#       "config": {...} | None, 
+#       "metrics": {...}, 
+#       "data": {...} 
+#   } 
+# }
 device_state: Dict[str, Dict[str, Any]] = {}
 
-# --- Helper for Printing ---
+# ==============================
+#      Helper Functions
+# ==============================
+
 def log_json(title: str, data: Any):
     print(f"\n{'='*20} {title} {'='*20}")
     print(json.dumps(data, indent=4, default=str))
@@ -82,12 +100,46 @@ def get_device_store(mac: str):
         }
     return device_state[mac]
 
+def calculate_rf_metrics(pxx: list):
+    """
+    Calculates statistical RF metrics from the Power Spectral Density array.
+    """
+    if not pxx or len(pxx) == 0:
+        return {
+            "noise_floor_dbm": 0,
+            "peak_power_dbm": 0,
+            "avg_power_dbm": 0,
+            "snr_db": 0,
+            "auto_threshold_dbm": 0
+        }
+
+    # Convert to numpy array for fast math
+    arr = np.array(pxx)
+
+    # 1. Peak Power (Max value in the sweep)
+    peak_power = float(np.max(arr))
+
+    # 2. Noise Floor Estimation (Median is robust against peaks)
+    noise_floor = float(np.median(arr))
+
+    # 3. Auto Threshold (Noise Floor + 6dB margin)
+    auto_threshold = noise_floor + 6.0 
+
+    # 4. Signal-to-Noise Ratio (SNR)
+    snr = peak_power - noise_floor
+
+    return {
+        "noise_floor_dbm": round(noise_floor, 2),
+        "peak_power_dbm": round(peak_power, 2),
+        "avg_power_dbm": round(float(np.mean(arr)), 2),
+        "snr_db": round(snr, 2),
+        "auto_threshold_dbm": round(auto_threshold, 2)
+    }
 
 # ==============================
-#      FRONTEND SIDE ENDPOINTS
+#    FRONTEND ENDPOINTS
 # ==============================
-# IMPORTANT: These must be defined BEFORE the /{mac}/ endpoints.
-# Otherwise, FastAPI will interpret "front" as a {mac} parameter.
+# Defined BEFORE /{mac}/ to avoid path collisions.
 
 @app.get("/api/v1/front/metrics", tags=["Frontend"])
 async def get_frontend_metrics(mac: str):
@@ -101,17 +153,35 @@ async def get_frontend_metrics(mac: str):
 async def get_frontend_data(mac: str):
     """
     **Poll Spectrum Data**
-    Used by Plot.jsx to fetch the latest PSD frame.
+    Returns raw Pxx data PLUS calculated RF metrics.
     """
     store = get_device_store(mac)
+    raw_data = store.get("data", {})
     
-    if not store.get("data"):
+    # Handle case where no data exists yet
+    if not raw_data or "Pxx" not in raw_data:
         return {
+            "start_freq_hz": 0,
+            "end_freq_hz": 0,
             "Pxx": [],
-            "center_freq": 0,
-            "span": 0
+            "metrics": {}
         }
-    return store["data"]
+
+    # 1. Get the Raw Data
+    pxx = raw_data.get("Pxx", [])
+
+    # 2. Calculate Metrics on the fly
+    rf_stats = calculate_rf_metrics(pxx)
+
+    # 3. Construct the Final JSON Structure
+    return {
+        "start_freq_hz": raw_data.get("start_freq_hz"),
+        "end_freq_hz": raw_data.get("end_freq_hz"),
+        "center_freq_hz": raw_data.get("center_freq_hz"),
+        "timestamp": raw_data.get("timestamp"),
+        "Pxx": pxx,
+        "metrics": rf_stats 
+    }
 
 @app.post("/api/v1/front/params", tags=["Frontend"])
 async def update_frontend_params(payload: dict = Body(...)):
@@ -135,7 +205,7 @@ async def update_frontend_params(payload: dict = Body(...)):
 
 
 # ==============================
-#      SENSOR SIDE ENDPOINTS
+#      SENSOR ENDPOINTS
 # ==============================
 
 @app.get("/api/v1/{mac}/realtime", tags=["Sensor"])

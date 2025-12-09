@@ -6,7 +6,7 @@ import random
 
 # ================= CONFIGURATION =================
 # The MAC address must match one of the VALID_MACS in your server
-SENSOR_MAC = "d0:65:78:9c:dd:d0"
+SENSOR_MAC = "2c:cf:67:51:17:be"
 API_BASE_URL = "http://127.0.0.1:8000/api/v1"
 
 # URL Construction
