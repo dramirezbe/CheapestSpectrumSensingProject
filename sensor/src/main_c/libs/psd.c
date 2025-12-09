@@ -1,13 +1,15 @@
 /**
  * @file Modules/psd.c
  */
-
+#define _GNU_SOURCE
 #include "psd.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
 #include <fftw3.h>
 #include <alloca.h>
+#include <string.h>
+#include <strings.h>  // para strcasecmp
 #include <complex.h>
 
 #ifndef M_PI

@@ -36,6 +36,8 @@
 #include <stdint.h>
 #include <math.h>
 
+
+
 // =========================================================
 // METRICS DEFINITIONS & GLOBALS
 // =========================================================
@@ -329,10 +331,7 @@ void handle_psd_message(const char *payload) {
 }
 
 
-#include <liquid/liquid.h>
-#include <complex.h>
-#include <stdint.h>
-#include <math.h>
+
 
 /*############################################## 
         Demodulation functions
@@ -432,12 +431,12 @@ static void demod_fm_and_save(signal_iq_t* sig, double fs_complex_hz)
 
     for (size_t n = 0; n < n_complex; n++) {
         double complex s = sig->signal_iq[n];
-        // Tus valores originales eran int8: [-128, 127]
-        // Aquí los normalizamos a [-1,1] dividiendo por 128.0
-        float I = (float)(creal(s) / 128.0);
-        float Q = (float)(cimag(s) / 128.0);
-        x[n] = I + Q * I * 0.0f;   // mejor: I + _Complex_I * Q
-        x[n] = I + _Complex_I * Q;
+
+        // Valores originales eran int8 en [-128, 127], ahora normalizamos a [-1, 1]
+        float i_val = (float)(creal(s) / 128.0);
+        float q_val = (float)(cimag(s) / 128.0);
+
+        x[n] = i_val + _Complex_I * q_val;
     }
 
     // 2) Crear demodulador FM de liquid-dsp
@@ -524,6 +523,10 @@ static void demod_fm_and_save(signal_iq_t* sig, double fs_complex_hz)
 // =========================================================
 
 int main() {
+
+    // 0. Bandera para habilitar / deshabilitar demodulación FM
+    //    (true -> demodular y guardar WAV, false -> solo PSD)
+    bool enable_demodulation = true;
     
     // 1. Metrics Init
     init_csv_filename();
@@ -614,9 +617,14 @@ int main() {
 
                 // 3) Demodulación FM y guardado de audio (5 s)
                 // Usa el sample rate complejo que corresponda en tu código:
-                // por ejemplo: desired_config.sample_rate_hz o hack_cfg.sample_rate_hz
-                double fs_complex_hz = 20000000.0; 
-                demod_fm_and_save(sig, fs_complex_hz);
+                // 3) Demodulación FM (opcional, controlada por bandera)
+                if (enable_demodulation) {
+                    // Usa aquí la Fs compleja real de tu HackRF
+                    // (ajusta según cómo tengas configurado hack_cfg)
+                    double fs_complex_hz = 20000000.0;
+                    demod_fm_and_save(sig, fs_complex_hz);
+                }
+
 
                 // --- STOP DSP TIMER (incluye PSD + demod) ---
                 t_end_dsp = get_time_ms();
@@ -654,3 +662,4 @@ int main() {
 
     return 0;
 }
+

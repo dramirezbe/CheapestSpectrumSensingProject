@@ -1,32 +1,28 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -e
 
-# Directorio del script
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
-
-# Compilador y flags
+# ========= CONFIG =========
 CC=gcc
-CFLAGS="-Wall -Wextra -O2"
-# Agregamos -lliquid al final para usar liquid-dsp
-LDFLAGS="-lhackrf -lzmq -lcjson -lm -lpthread -lliquid"
+CFLAGS="-O2 -Wall -Wextra -std=c11"
+INCLUDES="-Ilibs"
 
-# Lista de fuentes C (ajusta según tus archivos reales)
-SOURCES=(
-  rf.c
-  psd.c
-  sdr_HAL.c
-  ring_buffer.c
-  zmqsub.c
-  zmqpub.c
-)
+# Fuente principal
+MAIN_SRC="rf_metrics.c"
 
-# Nombre del ejecutable
-OUT=rf_engine
+# Todos los .c dentro de libs/
+LIB_SRCS=$(ls libs/*.c)
 
-echo "Compilando ${OUT}..."
-$CC $CFLAGS "${SOURCES[@]}" -o "$OUT" $LDFLAGS
+# Ejecutable final
+OUT="rf_metrics"
 
-echo
-echo "✅ Build completado."
-echo "Ejecutable generado: ./$OUT"
+# Librerías a enlazar
+LIBS="-lhackrf -lzmq -lcjson -lfftw3 -lm -lpthread -lliquid"
+
+echo "Compilando motor C..."
+echo "  Fuentes: $MAIN_SRC $LIB_SRCS"
+echo "  Output : $OUT"
+
+$CC $CFLAGS $INCLUDES $MAIN_SRC $LIB_SRCS -o $OUT $LIBS
+
+echo "✅ Build completo. Ejecutable: ./$OUT"
+
