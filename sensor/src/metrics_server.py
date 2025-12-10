@@ -1,3 +1,5 @@
+
+
 import cfg
 import os
 import csv
@@ -96,15 +98,19 @@ class MetricsManager:
 
 def fetch_job(client):
     """
-    Fetches job configuration.
-    Includes safety checks to prevent int(None) crashes.
+    Fetches job configuration desde la API FastAPI.
+    Lee el formato nuevo (center_freq_hz, resolution_hz, window, etc.)
+    pero devuelve EXACTAMENTE la misma estructura que antes para el motor C,
+    ignorando completamente el bloque de 'demodulation' y otros extras.
     """
     # Start Timer for Fetch
     t0 = time.perf_counter()
-    rc_returned, resp = client.get(f"/{cfg.get_mac()}/configuration")
+    # Asumimos que cfg.API_URL ya incluye /api/v1,
+    # por lo que aquí solo añadimos /{mac}/realtime
+    rc_returned, resp = client.get(f"/{cfg.get_mac()}/realtime")
     t1 = time.perf_counter()
     
-    fetch_duration_ms = (t1 - t0) * 1000
+    fetch_duration_ms = (t1 - t0) * 1000.0
 
     json_payload = {}
     
@@ -114,41 +120,66 @@ def fetch_job(client):
         except Exception:
             json_payload = {}
     
+    # Si la API devuelve None o {}, lo tomamos como "no hay config" (STOP)
     if not json_payload:
         return {}, resp, fetch_duration_ms
 
-    # --- FIX 1: Safety Wrappers ---
-    center = int(json_payload.get("center_frequency") or 0)
-    span = int(json_payload.get("span") or 0)
-    # ------------------------------------------
-        
-    return {
-        "center_freq_hz": center,
-        "rbw_hz": json_payload.get("resolution_hz"),
-        "port": json_payload.get("antenna_port"),
-        "win": json_payload.get("window"),
-        "overlap": json_payload.get("overlap"),
-        "sample_rate_hz": json_payload.get("sample_rate_hz"),
-        "lna_gain": json_payload.get("lna_gain"),
-        "vga_gain": json_payload.get("vga_gain"),
-        "antenna_amp": json_payload.get("antenna_amp"),
-        "span": span
-    }, resp, fetch_duration_ms
+    # Leer valores desde el nuevo formato de la API
+    # (center_freq_hz y span pueden venir como None, por eso el "or 0")
+    center = int(json_payload.get("center_freq_hz") or 0)
+    span   = int(json_payload.get("span") or 0)
 
-def fetch_data(payload):
-    # Extract raw data from C-Engine
+    # Construimos el diccionario EXACTAMENTE como lo esperaba tu motor C
+    cfg_dict = {
+        "center_freq_hz": center,
+        "rbw_hz":         json_payload.get("resolution_hz"),
+        "port":           json_payload.get("antenna_port"),   # en la API nueva no existe, quedará None
+        "win":            json_payload.get("window"),
+        "overlap":        json_payload.get("overlap"),
+        "sample_rate_hz": json_payload.get("sample_rate_hz"),
+        "lna_gain":       json_payload.get("lna_gain"),
+        "vga_gain":       json_payload.get("vga_gain"),
+        "antenna_amp":    json_payload.get("antenna_amp"),
+        "span":           span,
+    }
+
+    # NOTA: Aquí NO incluimos json_payload["demodulation"] ni 'scale', etc.
+    #       Es decir, para ZMQ el mensaje queda igual que antes.
+
+    return cfg_dict, resp, fetch_duration_ms
+
+
+def fetch_data(payload, cfg_center_freq_hz=None):
+    """
+    Empaqueta la respuesta del motor C en el formato que espera la API:
+
+    {
+      "start_freq_hz": ...,
+      "end_freq_hz": ...,
+      "center_freq_hz": ...,
+      "timestamp": "YYYY-MM-DDTHH:MM:SS.mmm",
+      "Pxx": [...]
+    }
+    """
+    # Extraer datos crudos del motor C
     Pxx = payload.get("Pxx", [])
     start_freq_hz = payload.get("start_freq_hz")
     end_freq_hz = payload.get("end_freq_hz")
-    timestamp = cfg.get_time_ms()
-    mac = cfg.get_mac()
+
+    # Calcular/ajustar center_freq_hz
+    center_freq_hz = cfg_center_freq_hz
+    if center_freq_hz is None and start_freq_hz is not None and end_freq_hz is not None:
+        center_freq_hz = (float(start_freq_hz) + float(end_freq_hz)) / 2.0
+
+    # Timestamp ISO con milisegundos (ej: 2023-10-27T10:30:00.123)
+    timestamp_iso = datetime.utcnow().isoformat(timespec="milliseconds")
 
     return {
-        "Pxx": Pxx,
         "start_freq_hz": start_freq_hz,
         "end_freq_hz": end_freq_hz,
-        "timestamp": timestamp,
-        "mac": mac
+        "center_freq_hz": center_freq_hz,
+        "timestamp": timestamp_iso,
+        "Pxx": Pxx,
     }
 
 async def run_server():
@@ -163,7 +194,7 @@ async def run_server():
     await asyncio.sleep(0.5)
     client = RequestClient(cfg.API_URL, verbose=True, logger=log)
 
-    # >>>  estado de streaming <<<
+    # >>> NUEVO: estado de streaming <<<
     current_cfg = None         # última configuración válida recibida del API
     streaming_enabled = False  # indica si debemos seguir adquiriendo en loop
 
@@ -237,7 +268,7 @@ async def run_server():
                 t_zmq_response = time.perf_counter()  # Time when data received
 
                 # 4. Formatear en diccionario
-                data_dict = fetch_data(raw_data)
+                data_dict = fetch_data(raw_data, cfg_to_use.get("center_freq_hz"))
 
                 # --- SPAN LOGIC START ---
                 raw_pxx = data_dict.get('Pxx')
@@ -305,7 +336,7 @@ async def run_server():
 
                 # 5. POST de la PSD al API
                 t_post_start = time.perf_counter()
-                client.post_json("/data", data_dict)
+                client.post_json(f"/{cfg.get_mac()}/data", data_dict)
                 t_post_end = time.perf_counter()
 
                 metrics_snapshot["upload_duration_ms"] = round(
@@ -338,4 +369,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(run_server())
     except KeyboardInterrupt:
-        pass
+        pass 
