@@ -1,7 +1,4 @@
 # 🖥️ Monitor Frontend
-
-The **Monitor Frontend** is the user interface for the [Cheapest Spectrum Sensing Project](https://github.com/dramirezbe/CheapestSpectrumSensingProject.git), providing **real-time visualization** of the spectrum data acquired by the sensor backend.
-
 ---
 
 ### ⚙️ **Technology Stack**
