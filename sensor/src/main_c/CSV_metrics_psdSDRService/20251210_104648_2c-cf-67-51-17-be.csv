@@ -1,0 +1,1 @@
+Timestamp_Epoch,Acq_Time_ms,PSD_Calc_Time_ms,CPU_Load_Pct,RAM_Used_MB,RAM_Total_MB,Swap_Used_MB,Disk_Usage_Pct,CenterFreq_Hz,RBW_Hz,SampleRate_Hz,Span_Hz,Overlap,Scale,Window,LNA,VGA,Amp,PSD_Bins
