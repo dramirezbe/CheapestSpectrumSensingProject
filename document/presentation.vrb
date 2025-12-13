@@ -1,0 +1,17 @@
+\frametitle{API Reference: Respuesta al Frontend}
+Ejemplo de respuesta enriquecida tras el procesamiento matemático:
+    \begin{lstlisting}[language=json, basicstyle=\tiny\ttfamily]
+{
+  "start_freq_hz": 88000000,
+  "center_freq_hz": 98000000,
+  "timestamp": 170584123.12,
+  "Pxx": [-120.5, -119.0, -115.4],
+  "metrics": {
+      "noise_floor_dbm": -120.0,
+      "peak_power_dbm": -85.2,
+      "avg_power_dbm": -110.5,
+      "snr_db": 34.8,
+      "auto_threshold_dbm": -114.0
+  }
+}
+    \end{lstlisting}

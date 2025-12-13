@@ -6,7 +6,7 @@ import { updateSensorParams } from '../services/controlService';
 import './Controls.css';
 
 // --- CONSTANTS ---
-const MAC_LIST = ["d0:65:78:9c:dd:d0", "2c:cf:67:51:17:be", "d0:65:78:9c:dd:d2"];
+const MAC_LIST = ["d0:65:78:9c:dd:d0", "2c:cf:67:51:17:be", "d0:65:78:9c:dd:d2", "d8:3a:dd:f7:22:87"];
 const MIN_FREQ_HZ = 8000000;
 const MAX_FREQ_HZ = 6000000000;
 

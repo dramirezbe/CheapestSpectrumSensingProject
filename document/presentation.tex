@@ -1,0 +1,288 @@
+\documentclass[aspectratio=169]{beamer}
+
+% --- Paquetes y Configuración ---
+\usepackage[utf8]{inputenc}
+\usepackage[spanish]{babel}
+\usepackage{graphicx}
+\usepackage{booktabs} % Para tablas estéticas
+\usepackage{listings} % Para código JSON
+\usepackage{xcolor}
+\usepackage{tikz}     % Para diagramas (opcional)
+
+% --- Configuración del Tema ---
+\usetheme{Madrid}
+\usecolortheme{whale} % Azul profesional
+
+% --- Configuración de Listings para JSON ---
+\definecolor{eclipseBlue}{RGB}{42,0.0,255}
+\definecolor{eclipseGreen}{RGB}{63,127,95}
+\definecolor{eclipsePurple}{RGB}{127,0,85}
+
+\lstdefinelanguage{json}{
+    basicstyle=\normalfont\ttfamily\footnotesize,
+    numbers=left,
+    numberstyle=\scriptsize,
+    stepnumber=1,
+    numbersep=8pt,
+    showstringspaces=false,
+    breaklines=true,
+    frame=lines,
+    backgroundcolor=\color{gray!5},
+    string=[s]{"}{"},
+    comment=[l]{:\ "},
+    morecomment=[l]{:"},
+    literate=
+     *{0}{{{\color{eclipseBlue}0}}}{1}
+      {1}{{{\color{eclipseBlue}1}}}{1}
+      {2}{{{\color{eclipseBlue}2}}}{1}
+      {3}{{{\color{eclipseBlue}3}}}{1}
+      {4}{{{\color{eclipseBlue}4}}}{1}
+      {5}{{{\color{eclipseBlue}5}}}{1}
+      {6}{{{\color{eclipseBlue}6}}}{1}
+      {7}{{{\color{eclipseBlue}7}}}{1}
+      {8}{{{\color{eclipseBlue}8}}}{1}
+      {9}{{{\color{eclipseBlue}9}}}{1}
+      {:}{{{\color{eclipsePurple}{:}}}}{1}
+      {,}{{{\color{eclipsePurple}{,}}}}{1}
+      {[}{{{\color{eclipsePurple}{[}}}}{1}
+      {]}{{{\color{eclipsePurple}{]}}}}{1},
+}
+
+% --- Metadatos del Proyecto ---
+\title[Spectrum Monitoring Platform]{Spectrum Monitoring Platform}
+\subtitle{Arquitectura Distribuida para el Monitoreo de Espectro RF}
+\author[Ingeniería]{Defensa de Proyecto Final}
+\institute[Universidad]{Departamento de Ingeniería Electrónica y Sistemas}
+\date{\today}
+
+\begin{document}
+
+% --- Slide 1: Título ---
+\begin{frame}
+    \titlepage
+\end{frame}
+
+% --- Slide 2: Agenda ---
+\begin{frame}{Agenda}
+    \tableofcontents
+\end{frame}
+
+% =========================================================================
+% SECCIÓN 1: VISIÓN GENERAL
+% =========================================================================
+\section{Descripción General}
+
+\begin{frame}{Visión General del Sistema}
+    El sistema actúa como un intermediario inteligente entre una red de sensores físicos y una interfaz de usuario (Dashboard ANE).
+    
+    \begin{columns}[T]
+        \begin{column}{0.48\textwidth}
+            \begin{block}{Características Backend (FastAPI)}
+                \begin{itemize}
+                    \item \textbf{API Restful:} Versionado (`/api/v1`) y segregado por roles.
+                    \item \textbf{Seguridad:} Lista blanca de MACs (`src/macs.json`).
+                    \item \textbf{In-Memory:} Gestión de estado volátil para baja latencia.
+                    \item \textbf{RF Post-Processing:} Cálculo de SNR, Noise Floor y Peak Power \textit{on-the-fly}.
+                \end{itemize}
+            \end{block}
+        \end{column}
+        
+        \begin{column}{0.48\textwidth}
+            \begin{alertblock}{Objetivo Principal}
+                Orquestar la captura de señales RF, procesarlas matemáticamente y servirlas en tiempo real al Frontend.
+            \end{alertblock}
+            \vspace{0.5cm}
+            \centering
+            % Placeholder para diagrama
+            \textit{Arquitectura basada en microservicios y Edge Computing.}
+        \end{column}
+    \end{columns}
+\end{frame}
+
+\section{Arquitectura del Sistema}
+
+\begin{frame}[fragile]{Arquitectura de Alto Nivel}
+    \begin{columns}[c] % [c] alinea verticalmente al centro
+        
+        % --- Columna Izquierda: Diagrama ---
+        \begin{column}{0.45\textwidth}
+            \centering
+            % Ajustamos la escala y la distancia entre nodos para que quepa bien
+            \begin{tikzpicture}[node distance=1.8cm, auto, scale=0.65, transform shape]
+                % Estilos
+                \tikzstyle{block} = [rectangle, draw, fill=blue!20, text width=8em, text centered, rounded corners, minimum height=3em]
+                \tikzstyle{line} = [draw, -latex', thick]
+                
+                \node [block, fill=green!20] (ui) {UI Web (React)};
+                \node [block, below of=ui] (backend) {Backend (FastAPI)};
+                \node [block, below of=backend] (sensor) {Sensor (Python)};
+                \node [block, fill=red!20, below of=sensor] (engine) {Motor DSP (C)};
+                
+                % Flechas más cortas y directas
+                \draw [line] (ui) -- (backend);
+                \draw [line] (backend) -- (sensor);
+                \draw [line] (sensor) -- (engine);
+                
+                % Etiquetas laterales pequeñas para contexto
+                \node[right of=ui, node distance=2.5cm, text width=2cm, align=left, font=\tiny] {Polling /api};
+                \node[right of=backend, node distance=2.5cm, text width=2cm, align=left, font=\tiny] {Heartbeat};
+                \node[right of=sensor, node distance=2.5cm, text width=2cm, align=left, font=\tiny] {ZMQ IPC};
+            \end{tikzpicture}
+        \end{column}
+
+        % --- Columna Derecha: Texto ---
+        \begin{column}{0.55\textwidth}
+            \small % Reducimos un poco la fuente del texto
+            \begin{itemize}
+                \itemsep1em % Espacio entre bullets
+                \item \textbf{UI Web:} \\
+                Consumo de datos y envío de configuraciones.
+                
+                \item \textbf{Backend:} \\
+                Validación, almacenamiento en RAM y cálculo matemático.
+                
+                \item \textbf{Sensor:} \\
+                Gateway Python para orquestación.
+                
+                \item \textbf{Motor C:} \\
+                Interacción directa con HackRF y algoritmos DSP.
+            \end{itemize}
+        \end{column}
+        
+    \end{columns}
+\end{frame}
+
+% =========================================================================
+% SECCIÓN 3: MÓDULO BACKEND
+% =========================================================================
+\section{Módulo Backend}
+
+\begin{frame}{Lógica de Negocio: Backend}
+    \textbf{1. Ingesta (Sensor $\to$ Backend)}
+    \begin{itemize}
+        \item El sensor consulta configuración (`GET`) y envía PSD cruda (`POST`).
+        \item Almacenamiento del array $P_{xx}$ en memoria (\texttt{device\_state}).
+    \end{itemize}
+    
+    \vspace{0.5cm}
+    
+    \textbf{2. Consumo y Cálculo (Backend $\to$ Frontend)}
+    \begin{itemize}
+        \item Recuperación de la PSD desde RAM.
+        \item Ejecución de \texttt{calculate\_rf\_metrics}:
+        \begin{equation*}
+            SNR_{dB} = P_{peak} - P_{noise\_floor}
+        \end{equation*}
+        \item Respuesta JSON lista para graficar.
+    \end{itemize}
+\end{frame}
+
+\begin{frame}[fragile]{API Reference: Respuesta al Frontend}
+    Ejemplo de respuesta enriquecida tras el procesamiento matemático:
+    \begin{lstlisting}[language=json, basicstyle=\tiny\ttfamily]
+{
+  "start_freq_hz": 88000000,
+  "center_freq_hz": 98000000,
+  "timestamp": 170584123.12,
+  "Pxx": [-120.5, -119.0, -115.4],
+  "metrics": {
+      "noise_floor_dbm": -120.0,
+      "peak_power_dbm": -85.2,
+      "avg_power_dbm": -110.5,
+      "snr_db": 34.8,
+      "auto_threshold_dbm": -114.0
+  }
+}
+    \end{lstlisting}
+\end{frame}
+
+% =========================================================================
+% SECCIÓN 4: MÓDULO SENSOR
+% =========================================================================
+\section{Módulo Sensor (Edge)}
+
+\begin{frame}{Arquitectura del Sensor (Edge Computing)}
+    El sensor se divide en dos procesos comunicados por \textbf{ZMQ (IPC)}:
+    
+    \begin{columns}[T]
+        \begin{column}{0.5\textwidth}
+            \begin{block}{1. rf\_metrics (Motor C)}
+                \begin{itemize}
+                    \item \textbf{Headless:} Ejecución continua y robusta.
+                    \item \textbf{DSP:} Welch PSD, Ventaneo y FFT.
+                    \item \textbf{Watchdog:} Auto-recuperación de hardware USB (HackRF).
+                    \item \textbf{Logs:} Métricas de CPU, RAM y tiempo de adquisición.
+                \end{itemize}
+            \end{block}
+        \end{column}
+        
+        \begin{column}{0.5\textwidth}
+            \begin{block}{2. Metrics Server (Python)}
+                \begin{itemize}
+                    \item \textbf{Orquestación:} Cliente HTTP y Gateway ZMQ.
+                    \item \textbf{Span Chopping:} Optimización de ancho de banda.
+                    \item \textbf{Gestión:} Rotación de logs y manejo de errores de red.
+                \end{itemize}
+            \end{block}
+        \end{column}
+    \end{columns}
+\end{frame}
+
+\begin{frame}{Optimización: Lógica de "Span Chopping"}
+    Para reducir el consumo de datos (4G/IoT), el script de Python recorta la información antes de enviarla.
+    
+    \begin{enumerate}
+        \item \textbf{Captura:} El HackRF captura un ancho de banda fijo basado en el \texttt{sample\_rate}.
+        \item \textbf{Procesamiento:} Si el usuario solicita un \texttt{span} menor al capturado:
+        \begin{itemize}
+            \item Se eliminan los bordes (bins) innecesarios del array $P_{xx}$.
+            \item Se reajustan los metadatos de frecuencia.
+        \end{itemize}
+        \item \textbf{Resultado:} Reducción drástica del tamaño del payload JSON.
+    \end{enumerate}
+    
+    \begin{center}
+        \small \textit{Esto permite monitoreo remoto con bajo consumo de ancho de banda de subida.}
+    \end{center}
+\end{frame}
+
+\begin{frame}{Archivos de Log y Auditoría}
+    El sistema genera evidencia local del rendimiento:
+    
+    \begin{table}[]
+        \resizebox{0.9\textwidth}{!}{
+        \begin{tabular}{@{}lll@{}}
+        \toprule
+        \textbf{Módulo} & \textbf{Métrica} & \textbf{Descripción} \\ \midrule
+        Motor C & \texttt{Acq\_Time\_ms} & Tiempo llenando buffer RX (aire). \\
+        Motor C & \texttt{DSP\_Time\_ms} & Tiempo calculando FFT/Welch. \\
+        Python & \texttt{upload\_duration\_ms} & Latencia de subida al Backend. \\
+        Python & \texttt{outgoing\_pkg\_KB} & Tamaño real del JSON optimizado. \\ \bottomrule
+        \end{tabular}
+        }
+    \end{table}
+\end{frame}
+
+% =========================================================================
+% CONCLUSIÓN
+% =========================================================================
+\section{Conclusiones}
+
+\begin{frame}{Conclusiones y Estado del Proyecto (v1.3.0)}
+    \begin{itemize}
+        \item \textbf{Arquitectura Robusta:} Separación clara de responsabilidades entre C (Cómputo pesado) y Python/FastAPI (Gestión y Lógica).
+        \item \textbf{Tolerancia a Fallos:} Mecanismos de reconexión USB automática y validación de timeouts en ZMQ.
+        \item \textbf{Eficiencia:} 
+            \begin{itemize}
+                \item Backend: Baja latencia usando memoria RAM.
+                \item Sensor: Ahorro de datos mediante \textit{Span Chopping}.
+            \end{itemize}
+        \item \textbf{Escalabilidad:} Diseño API Restful preparado para múltiples sensores simultáneos.
+    \end{itemize}
+    
+    \vspace{1cm}
+    \centering
+    \textbf{\Large ¿Preguntas?}
+\end{frame}
+
+\end{document}
