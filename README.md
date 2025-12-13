@@ -1,3 +1,8 @@
+# Authors
+- David Ramírez Betancourth
+- Santiago Bustamante Montoya
+- Oscar Gutierrez Andrés Estepa
+
 # 📡 Cheapest Spectrum Sensing Project
 
 This project provides a complete solution for **real-time spectrum sensing  (Visualization and Audio Demodulation)** via a web interface, utilizing affordable Software Defined Radio (SDR) hardware.
